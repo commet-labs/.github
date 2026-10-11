@@ -1,0 +1,42 @@
+name: Contribution gate
+
+on:
+  workflow_call:
+
+jobs:
+  require-approved-issue:
+    if: github.event.pull_request.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: read
+    steps:
+      - name: Close pull requests without an issue assigned to their author
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          author_permission=$(gh api "repos/$REPOSITORY/collaborators/$AUTHOR/permission" --jq .permission)
+          if [[ "$author_permission" =~ ^(admin|maintain|write)$ ]]; then
+            exit 0
+          fi
+
+          approved_issue_count=$(gh api graphql \
+            -f query='query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                  closingIssuesReferences(first: 10) {
+                    nodes { assignees(first: 20) { nodes { login } } }
+                  }
+                }
+              }
+            }' \
+            -f owner="${REPOSITORY%/*}" -f name="${REPOSITORY#*/}" -F number="$PULL_REQUEST_NUMBER" \
+            --jq "[.data.repository.pullRequest.closingIssuesReferences.nodes[].assignees.nodes[] | select(.login == \"$AUTHOR\")] | length")
+          if [[ "$approved_issue_count" -gt 0 ]]; then
+            exit 0
+          fi
+
+          gh pr close "$PULL_REQUEST_NUMBER" --repo "$REPOSITORY" --comment "Thanks for your interest in contributing! We only review pull requests for issues a maintainer has approved. Please open an issue describing the change first. If we agree on it, we'll assign it to you, and you can then open a pull request that references it with \`Closes #<issue number>\`. See https://github.com/commet-labs/.github/blob/main/CONTRIBUTING.md"
